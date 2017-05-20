@@ -4,10 +4,9 @@
 var maxRedirect = {'maxRedirects': 3}
 
 var request = require('request').defaults(maxRedirect);
-var async = require('async');
+var eachLimit = require('./lib/eachLimit');
 var url_lib = require('url');
 var fs = require('fs');
-var Sync = require('sync');
 
 let match = 'ahref=';
 let state = {
@@ -18,7 +17,6 @@ let state = {
 	'f': 'ahref',
 	'=': 'ahref='
 };
-let visited = {};
 
 var valid_protocols = ['http:', 'https:'];
 
@@ -26,30 +24,58 @@ function getURL(url_obj) {
 	return (url_obj.protocol + "//" + url_obj.hostname);
 }
 
-function make_request(url, sync_callback) {
-	console.log("Crawling : ", url);
-	var url_obj = url_lib.parse(url);
+function crawl(url_array, visited_array) {
+	let currently_processing_urls = url_array;
 	let urls_to_be_processed = [];
-	request({
-		url: url,
-		method: 'GET',
-		timeout: 60000
-	}, function(err, response, body) {
-		if(err) {
-			console.log(err);
-		}
-		if(typeof body === 'string') {
-			urls_to_be_processed = extract_url(getURL(url_obj), body, visited);
-		}
-		sync_callback(null, urls_to_be_processed);
+	let visited = visited_array;
+
+	eachLimit(currently_processing_urls, 5, function (url, callback) {
+		console.log("Crawling : ", url);
+		var url_obj = url_lib.parse(url);
+		
+		request({
+			url: url,
+			method: 'GET',
+			timeout: 60000
+		}, function(err, response, body) {
+			if(err) {
+				console.log(err);
+			}
+			if(typeof body === 'string') {
+				let unique_url = extract_url(getURL(url_obj), body, visited);
+				urls_to_be_processed.push.apply(urls_to_be_processed, unique_url);
+				fs.appendFile('crawl.csv', '\n' + unique_url.join('\n'), function (error) {
+					if (error) {
+						console.log("Error: " , error);
+					}
+					callback();
+				});
+			} else {
+				callback();
+			}
+		});
+		
+	}, function(err) {
+		if(err) console.log("Error", err);
+		
+		//To avoid max call stack
+		setTimeout(function(urls_to_be_processed, visited) {
+			if(urls_to_be_processed.length > 0){
+				crawl(urls_to_be_processed, visited);
+			} else {
+				console.log("Crawling done");
+			}
+		}, 10, urls_to_be_processed, visited);
 	});
 }
+
+
 
 function extract_url(base_url, body, visited) {
 	let temp_href;
 	let temp_url
 	let current_match = '';
-	let urls = [];
+	let response_array = [];
 	for(let i = 0; i < body.length; i++) {
 		if(body[i] === ' ') {
 			//ignore
@@ -71,7 +97,7 @@ function extract_url(base_url, body, visited) {
 						temp_url = base_url + ((url_obj.path  &&  ((url_obj.path[0] != '/') ? ('/' + url_obj.path) :  url_obj.path)) || '');
 					}
 					if(!visited[temp_url]) {
-						urls.push(temp_url);
+						response_array.push(temp_url);
 						visited[temp_url] = true;
 					} else {
 						//console.log("URL already visited ", temp_url);
@@ -87,29 +113,23 @@ function extract_url(base_url, body, visited) {
 			temp_href = '';
 		}
 	}
-	return urls;
+	return response_array;
 }
 
-Sync(function() {
-	let result = fs.writeFile.sync(null, 'crawl.csv', 'URLS\nhttp://medium.com');
-
-	let seed_url_array = ["http://medium.com"];
-	let seed_visited_map = {"http://medium.com": true};
-	let urls_to_be_processed = [];
-	let visited = seed_visited_map;
-	let url_array = seed_url_array;
-
-	for(let index = 0; index < url_array.length; index++) {
-		let url = url_array[index];
-		let urls_to_be_saved = make_request.sync(null, url);
-		
-		if(urls_to_be_saved.length > 0){
-			url_array.push.apply(url_array, urls_to_be_saved);
-			let results = fs.appendFile.sync(null, 'crawl.csv', '\n' + urls_to_be_saved.join('\n'));
+function startCrawling() {
+	//over write file if already existed
+	fs.writeFile('crawl.csv', 'URLS\nhttp://medium.com', function (error) {
+		if (error) {
+			console.log("Error:" , error);
 		}
-	}
-	console.log("Crawling done");
-});
+		//start crawling
+		let seed_url_array = ["http://medium.com"];
+		let seed_visited_map = {"http://medium.com": true}
+		crawl(seed_url_array, seed_visited_map);
+	});
+}
+
+startCrawling();
 
 //Functions in followed code have not been inplemented
 //So the program will not close instantly
